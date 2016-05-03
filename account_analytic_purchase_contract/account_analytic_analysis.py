@@ -6,18 +6,26 @@
 
 from dateutil.relativedelta import relativedelta
 import datetime
-import logging
 import time
+import logging
+_logger = logging.getLogger(__name__)
 
 from openerp.osv import osv, fields
 import openerp.tools
 from openerp.tools.translate import _
+from openerp.exceptions import UserError
 
 from openerp.addons.decimal_precision import decimal_precision as dp
 
 
 class account_analytic_account(osv.osv):
-    _inherit = "account.analytic.account"
+    _inherit = "sale.subscription"
+
+    _columns = {
+        'type': fields.selection([('contract', 'Sale Contract'), ('template', 'Template'), ('purchase_contract', 'Purchase Contract')], 'Type'),
+        'description': fields.text('Terms and Conditions'),
+        'partner_id': fields.many2one('res.partner', 'Partner', ondelete='cascade', help="Select a partner which will use analytic account specified in analytic default (e.g. create new customer invoice or Sales order if we select this partner, it will automatically take this as an analytic account)")
+    }
 
     def _prepare_invoice_data(self, cr, uid, contract, context=None):
         context = context or {}
@@ -29,7 +37,7 @@ class account_analytic_account(osv.osv):
                 raise osv.except_osv(_('No Supplier Defined!'), _(
                     "You must first select a Supplier for Contract %s!") % contract.name)
 
-            fpos = contract.partner_id.property_account_position or False
+            fpos = contract.partner_id.property_account_position_id or False
             journal_ids = journal_obj.search(cr, uid, [(
                 'type', '=', 'purchase'), ('company_id', '=', contract.company_id.id or False)], limit=1)
             if not journal_ids:
@@ -45,7 +53,7 @@ class account_analytic_account(osv.osv):
                 currency_id = contract.company_id.currency_id.id
 
             invoice = {
-                'account_id': contract.partner_id.property_account_payable.id,
+                'account_id': contract.partner_id.property_account_payable_id.id,
                 'type': 'in_invoice',
                 'reference': contract.name,
                 'partner_id': contract.partner_id.id,
@@ -53,7 +61,7 @@ class account_analytic_account(osv.osv):
                 'journal_id': len(journal_ids) and journal_ids[0] or False,
                 'date_invoice': contract.recurring_next_date,
                 'origin': contract.code,
-                'fiscal_position': fpos and fpos.id,
+                'fiscal_position_id': fpos and fpos.id,
                 'company_id': contract.company_id.id or False,
             }
             return invoice
@@ -61,7 +69,6 @@ class account_analytic_account(osv.osv):
             return super(account_analytic_account, self)._prepare_invoice_data(cr, uid, contract, context=context)
 
     def _prepare_invoice_lines(self, cr, uid, contract, fiscal_position_id, context=None):
-
         if not context:
             context = {}
         if contract.type == 'purchase_contract':
@@ -74,9 +81,9 @@ class account_analytic_account(osv.osv):
             for line in contract.recurring_invoice_line_ids:
 
                 res = line.product_id
-                account_id = res.property_account_expense.id
+                account_id = res.property_account_expense_id.id
                 if not account_id:
-                    account_id = res.categ_id.property_account_expense_categ.id
+                    account_id = res.categ_id.property_account_expense_categ_id.id
                 account_id = fpos_obj.map_account(
                     cr, uid, fiscal_position, account_id)
 
@@ -96,9 +103,9 @@ class account_analytic_account(osv.osv):
                     'account_analytic_id': contract.id,
                     'price_unit': line.price_unit or 0.0,
                     'quantity': line.quantity,
-                    'uos_id': line.uom_id.id or False,
+                    'uom_id': line.uom_id.id or False,
                     'product_id': line.product_id.id or False,
-                    'invoice_line_tax_id': [(6, 0, tax_id)],
+                    'invoice_line_tax_ids': [(6, 0, tax_id)],
                 }))
             return invoice_lines
         else:
@@ -107,5 +114,23 @@ class account_analytic_account(osv.osv):
     def _cron_recurring_create_invoice_purchase(self, cr, uid, context=None):
         current_date =  time.strftime('%Y-%m-%d')
         contract_ids = self.search(cr, uid, [('recurring_next_date', '<=', current_date), (
-            'state', '=', 'open'), ('recurring_invoices', '=', True), ('type', '=', 'purchase_contract')])
+            'state', '=', 'open'), ('type', '=', 'purchase_contract')])
         return self._recurring_create_invoice(cr, uid, contract_ids, context=context)
+
+    def action_subscription_invoice(self, cr, uid, ids, context=None):
+        subs = self.browse(cr, uid, ids, context=context)
+        analytic_ids = [sub.analytic_account_id.id for sub in subs]
+        orders = self.pool['sale.order'].search_read(cr, uid, domain=[('subscription_id', 'in', ids)], fields=['name'], context=context)
+        order_names = [order['name'] for order in orders]
+        invoice_ids = self.pool['account.invoice'].search(cr, uid, ['|', ('invoice_line_ids.account_analytic_id', 'in', analytic_ids), ('origin', 'in', [sub.code for sub in subs] + order_names)], context=context)
+        imd = self.pool['ir.model.data']
+        list_view_id = imd.xmlid_to_res_id(cr, uid, 'account.invoice_tree')
+        form_view_id = imd.xmlid_to_res_id(cr, uid, 'account.invoice_form')
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "account.invoice",
+            "views": [[list_view_id, "tree"], [form_view_id, "form"]],
+            "domain": [["id", "in", invoice_ids]],
+            "context": {"create": False},
+            "name": _("Invoices"),
+        }
