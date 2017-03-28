@@ -6,6 +6,9 @@
             <field name="model">sale.subscription</field>
             <field name="inherit_id" ref="sale_contract.sale_subscription_view_form" />
             <field name="arch" type="xml">
+                <xpath expr="//field[@name='recurring_invoice_line_ids']//field[@name='price_unit']" position="before">
+                    <field name="impacted_analytic_account_id" />
+                </xpath>
                 <xpath expr="//page[@id='lines']" position="after">
                     <h2>Terms and Conditions</h2>
                     <field name="description"/>
@@ -25,3 +28,6 @@
         </record>
 	</data>
 </openerp>
+
+
+

@@ -100,7 +100,7 @@ class account_analytic_account(osv.osv):
                 invoice_lines.append((0, 0, {
                     'name': line.name,
                     'account_id': account_id,
-                    'account_analytic_id': contract.id,
+                    'account_analytic_id': line.impacted_analytic_account_id.id,
                     'price_unit': line.price_unit or 0.0,
                     'quantity': line.quantity,
                     'uom_id': line.uom_id.id or False,
